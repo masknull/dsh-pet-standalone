@@ -1,0 +1,122 @@
+# build-standalone.yml — cross-compile dsh-pet-standalone.exe on ubuntu-latest
+#
+# MinGW-w64 cross-compile → Windows exe. Single-trigger: push to main →
+# build → auto-increment tag → publish GitHub Release with exe.
+name: build-standalone
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'assets/**'
+      - 'scripts/**'
+      - 'samples/**'
+      - 'build.ps1'
+      - '.github/workflows/build-standalone.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mingw-w64 ffmpeg python3-pip zstd
+
+      - name: Ensure upstream plugin assets (original thumb WebM)
+        run: |
+          if [ ! -d 'dsh-pet/assets/thumb' ]; then
+            echo 'fetching upstream plugin zip'
+            curl -L --retry 3 -o upstream.zip \
+              'https://codeload.github.com/PC2005-cloud/dsh-pet/zip/refs/heads/main'
+            unzip -q upstream.zip
+            rm upstream.zip
+            THUMB=$(find dsh-pet-main -type d -name thumb | head -1)
+            if [ -z "$THUMB" ]; then echo 'ERROR: thumb dir not found'; exit 1; fi
+            mkdir -p dsh-pet/assets
+            mv "$THUMB" dsh-pet/assets/thumb
+          fi
+          COUNT=$(find dsh-pet/assets/thumb -name '*.webm' | wc -l)
+          echo "webm count: $COUNT"
+          if [ "$COUNT" -lt 91 ]; then echo "ERROR: expected >=91 webm, got $COUNT"; exit 1; fi
+
+      - name: Install Python deps
+        run: pip3 install zstandard
+
+      - name: Stage embedded single-exe set (dual-stream packs + rcgen)
+        run: |
+          python3 scripts/stage-webm2.py \
+            --src dsh-pet/assets/thumb \
+            --manifest assets/embedded-manifest.json \
+            --out assets/embedded \
+            --config assets/default-config.jsonc
+          python3 scripts/rcgen.py
+
+      - name: Build exe (MinGW-w64 cross-compile)
+        run: |
+          mkdir -p build
+          VPX=$PWD/mingw64
+          curl -L --retry 3 -o libvpx.pkg.tar.zst \
+            'https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libvpx-1.16.0-1-any.pkg.tar.zst'
+          tar --zstd -xf libvpx.pkg.tar.zst
+          test -f "$VPX/lib/libvpx.a" || { echo 'ERROR: libvpx.a not found'; exit 1; }
+          WINDRES=x86_64-w64-mingw32-windres
+          GXX=x86_64-w64-mingw32-g++-posix || GXX=x86_64-w64-mingw32-g++
+          $WINDRES -I src src/app.rc -o build/app_rc.o
+          $WINDRES -I src src/embedded.rc -o build/embedded_rc.o
+          $GXX \
+            -std=c++17 -Os -s -static \
+            -fno-exceptions -fno-rtti \
+            -D_WIN32_WINNT=0x0601 \
+            -ffunction-sections -fdata-sections -pipe -Wl,--gc-sections \
+            -municode -mwindows \
+            -I src -I $VPX/include \
+            src/main.cpp src/pet.cpp src/anim.cpp src/inflate.cpp \
+            src/jsonc.cpp src/config.cpp src/resources.cpp src/webm.cpp \
+            build/app_rc.o build/embedded_rc.o \
+            $VPX/lib/libvpx.a \
+            -o build/dsh-pet-standalone.exe \
+            -luser32 -lgdi32 -lshell32 -ladvapi32
+          echo "exe size: $(stat -c%s build/dsh-pet-standalone.exe) bytes"
+
+      - name: Package exe
+        run: |
+          mkdir -p dist/single
+          cp build/dsh-pet-standalone.exe dist/single/
+          echo "exe: $(stat -c%s dist/single/dsh-pet-standalone.exe) bytes"
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-pet-standalone-windows-x64-exe
+          path: dist/single/dsh-pet-standalone.exe
+          if-no-files-found: error
+
+      - name: Auto tag + publish GitHub Release
+        if: github.ref == 'refs/heads/main' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --tags --force
+          LAST=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -z "$LAST" ]; then LAST="v0.0.0"; fi
+          MAJOR=$(echo "$LAST" | sed 's/v//' | cut -d. -f1)
+          MINOR=$(echo "$LAST" | sed 's/v//' | cut -d. -f2)
+          PATCH=$(echo "$LAST" | sed 's/v//' | cut -d. -f3)
+          VER="v$MAJOR.$MINOR.$((PATCH + 1))"
+          echo "auto-publishing release $VER"
+          git config user.name "deepseek"
+          git config user.email "deepseek@users.noreply.github.com"
+          git tag "$VER"
+          git push origin "$VER"
+          gh release create "$VER" \
+            dist/single/dsh-pet-standalone.exe \
+            --title "dsh-pet-standalone $VER" \
+            --notes "Automated build — 91 dual-stream VP9 animations, single exe, zero external files."
