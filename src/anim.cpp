@@ -129,6 +129,11 @@ bool AnimUnit::decodeFrame(uint32_t i, std::vector<uint8_t>& scratch,
     return false;
 }
 
+void AnimUnit::releaseDecoders() {
+    if (webm) webm->releaseDecoders();
+    if (webmAlpha) webmAlpha->releaseDecoders();
+}
+
 bool AnimPack::parseHeader() {
     ok = false;
     palette.clear();

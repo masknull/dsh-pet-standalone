@@ -98,6 +98,9 @@ struct AnimUnit {
     bool decodeFrame(uint32_t i, std::vector<uint8_t>& scratch,
                      std::vector<uint8_t>& out) const;
 
+    // Release vpx decoder resources (called when switching animations)
+    void releaseDecoders();
+
     // Builders (fill name + one backend + the shared fields).
     static AnimUnit fromPka(std::string n, AnimPack p);
     static AnimUnit fromWebm(std::string n, const uint8_t* data, size_t len);
