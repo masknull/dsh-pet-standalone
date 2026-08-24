@@ -169,7 +169,7 @@ bool PetWidget::create() {
 
     diagLog("app: %s pid=%lu embedded_anims=%d", kAppVersionDesc,
             (unsigned long)GetCurrentProcessId(), (int)anims_.size());
-    SetTimer(hwnd_, 1, 8, nullptr);
+    SetTimer(hwnd_, 1, 42, nullptr);
     addTray(false);
 
     // initial corner placement
@@ -482,10 +482,12 @@ void PetWidget::paint() {
     if (curAnim_ < 0 || !visible_) return;
     const AnimUnit& p = anims_[curAnim_].pack;
     static std::vector<uint8_t> scratch, frame;
+    bool decoded = false;
     if (curFrame_ != lastFrame_ || facingRight_ != lastFacing_) {
         if (!p.decodeFrame(curFrame_, scratch, frame)) return;
         lastFrame_ = curFrame_;
         lastFacing_ = facingRight_;
+        decoded = true;
         // scale + premultiply + optional mirror into the DIB (dibBits_ is premultiplied BGRA)
         const uint8_t* src = frame.data();
         uint32_t pw = p.w, ph = p.h;
@@ -525,6 +527,8 @@ void PetWidget::paint() {
             }
         }
     }
+    // only blit when a new frame was actually decoded (reduces GDI calls)
+    if (!decoded) return;
     POINT pt{(int)winX_, (int)winY_};
     SIZE sz{winW_, winH_};
     POINT src{0, 0};
