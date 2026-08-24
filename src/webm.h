@@ -82,6 +82,10 @@ public:
     void setGrayOnly(bool g) { grayOnly_ = g; }
     bool grayOnly() const { return grayOnly_; }
 
+    // Release all decoder resources (vpx contexts, threads). Call when switching
+    // away from this animation to free memory and reduce thread count.
+    void releaseDecoders() { destroyCodecs(); pos_ = UINT32_MAX; lastDecodedSpan_ = 0; alphaValid_ = false; alphaHold_.clear(); }
+
 private:
     const uint8_t* data_ = nullptr;
     size_t len_ = 0;

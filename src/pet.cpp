@@ -282,6 +282,12 @@ int PetWidget::pickCategoryAction(const std::string& excludeName) {
 
 void PetWidget::play(int animIdx, bool onceFlag) {
     if (animIdx < 0 || animIdx >= (int)anims_.size()) return;
+    // Release previous animation's vpx decoders to free memory and threads
+    if (curAnim_ >= 0 && curAnim_ != animIdx && curAnim_ < (int)anims_.size()) {
+        auto& old = anims_[curAnim_].pack;
+        if (old.webm) old.webm->releaseDecoders();
+        if (old.webmAlpha) old.webmAlpha->releaseDecoders();
+    }
     // switchTo dedupe: identical (anim, once) while still playing -> keep playing
     if (curAnim_ == animIdx && once_ == onceFlag && !endedHandled_) return;
     curAnim_ = animIdx;

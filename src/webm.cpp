@@ -344,7 +344,7 @@ bool WebmVideo::ensureCodecs() const {
         vpx_codec_ctx_t* ctx = (vpx_codec_ctx_t*)calloc(1, sizeof(vpx_codec_ctx_t));
         if (!ctx) return false;
         vpx_codec_dec_cfg_t cfg{};
-        cfg.threads = 2;
+        cfg.threads = 1;
         if (vpx_codec_dec_init(ctx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) {
             free(ctx);
             return false;
