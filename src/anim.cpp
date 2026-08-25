@@ -132,6 +132,13 @@ bool AnimUnit::decodeFrame(uint32_t i, std::vector<uint8_t>& scratch,
 void AnimUnit::releaseDecoders() {
     if (webm) webm->releaseDecoders();
     if (webmAlpha) webmAlpha->releaseDecoders();
+    // v9.1 memory fix: aScratch_/aFrame_ (each up to w*h*4) were kept at full
+    // capacity for EVERY animation that ever played, so the set of played anims
+    // permanently pinned 91*(0.92+0.92+alpha) MB of private memory. Released
+    // buffers are rebuilt lazily by the next decodeFrame — zero cost when the
+    // animation is not current.
+    std::vector<uint8_t>().swap(aScratch_);
+    std::vector<uint8_t>().swap(aFrame_);
 }
 
 bool AnimPack::parseHeader() {

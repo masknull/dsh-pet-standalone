@@ -169,7 +169,11 @@ bool PetWidget::create() {
 
     diagLog("app: %s pid=%lu embedded_anims=%d", kAppVersionDesc,
             (unsigned long)GetCurrentProcessId(), (int)anims_.size());
-    SetTimer(hwnd_, 1, 8, nullptr);
+    // v9.1 perf: 16 ms (≈62 Hz) instead of 8 ms. The pet content runs at 24 fps,
+    // so 62 Hz tick is ample for frame stepping and 60 Hz-smooth movement;
+    // combined with dirty-flag ULW (paint only submits on actual changes) this
+    // decouples timer rate from DWM compositing cost.
+    SetTimer(hwnd_, 1, 16, nullptr);
     addTray(false);
 
     // initial corner placement
@@ -482,13 +486,31 @@ void PetWidget::paint() {
     if (curAnim_ < 0 || !visible_) return;
     const AnimUnit& p = anims_[curAnim_].pack;
     static std::vector<uint8_t> scratch, frame;
-    if (curFrame_ != lastFrame_ || facingRight_ != lastFacing_) {
+    bool contentChanged = (curFrame_ != lastFrame_ || facingRight_ != lastFacing_);
+    if (contentChanged) {
         if (!p.decodeFrame(curFrame_, scratch, frame)) return;
         lastFrame_ = curFrame_;
         lastFacing_ = facingRight_;
         // scale + premultiply + optional mirror into the DIB (dibBits_ is premultiplied BGRA)
         const uint8_t* src = frame.data();
         uint32_t pw = p.w, ph = p.h;
+        // v9.1 perf: hoist the per-pixel source-x math (one division + mirror
+        // fold) into tables rebuilt only when the window size changes. The
+        // bilinear weights/indices are derived exactly as before, so the pixel
+        // output is bit-identical to the v9 inline version.
+        static std::vector<double> sxTab, sxMirrorTab;
+        static int sxTabW = -1, sxTabPw = -1;
+        if (sxTabW != winW_ || sxTabPw != (int)pw) {
+            sxTab.assign(winW_, 0.0);
+            sxMirrorTab.assign(winW_, 0.0);
+            for (int dx = 0; dx < winW_; dx++) {
+                double s = ((double)dx + 0.5) * (double)pw / winW_ - 0.5;
+                sxTab[dx] = s;
+                sxMirrorTab[dx] = (double)(pw - 1) - s;
+            }
+            sxTabW = winW_;
+            sxTabPw = (int)pw;
+        }
         for (int dy = 0; dy < winH_; dy++) {
             double sy = ((double)dy + 0.5) * (double)ph / winH_ - 0.5;
             if (sy < 0) sy = 0;
@@ -498,8 +520,7 @@ void PetWidget::paint() {
             int y1 = y0 + 1 < (int)ph ? y0 + 1 : y0;
             uint8_t* dstRow = dibBits_ + (size_t)dy * winW_ * 4;
             for (int dx = 0; dx < winW_; dx++) {
-                double sx = ((double)dx + 0.5) * (double)pw / winW_ - 0.5;
-                if (facingRight_) sx = (double)(pw - 1) - sx;  // mirror
+                double sx = facingRight_ ? sxMirrorTab[dx] : sxTab[dx];
                 if (sx < 0) sx = 0;
                 if (sx > pw - 1) sx = pw - 1;
                 int x0 = (int)sx;
@@ -525,6 +546,14 @@ void PetWidget::paint() {
             }
         }
     }
+    // v9.1 perf: UpdateLayeredWindow submits the surface to DWM; doing that 62+
+    // times per second when the DIB is unchanged is pure waste. Submit ONLY when
+    // the pixel content actually changed (new frame / mirror flip), or at the
+    // very first paint so the window shows something. Window movement uses
+    // SetWindowPos (placeAt) and needs no re-submit — the layered surface
+    // travels with the window rect.
+    if (!contentChanged && !firstPaint_) return;
+    firstPaint_ = false;
     POINT pt{(int)winX_, (int)winY_};
     SIZE sz{winW_, winH_};
     POINT src{0, 0};

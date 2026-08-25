@@ -82,9 +82,17 @@ public:
     void setGrayOnly(bool g) { grayOnly_ = g; }
     bool grayOnly() const { return grayOnly_; }
 
-    // Release all decoder resources (vpx contexts, threads). Call when switching
-    // away from this animation to free memory and reduce thread count.
-    void releaseDecoders() { destroyCodecs(); pos_ = UINT32_MAX; lastDecodedSpan_ = 0; alphaValid_ = false; alphaHold_.clear(); }
+    // Release all decoder resources (vpx contexts, threads) AND the per-anim
+    // scratch buffers. Called when switching away from this animation to free
+    // memory and reduce thread count. v9.1: also drops cur_/alphaHold_
+    // capacity — keeping them pinned for all 91 anims was the linear private
+    // memory growth (each vector holds up to w*h*4 bytes after playing).
+    void releaseDecoders() {
+        destroyCodecs(); pos_ = UINT32_MAX; lastDecodedSpan_ = 0;
+        alphaValid_ = false;
+        std::vector<uint8_t>().swap(alphaHold_);
+        std::vector<uint8_t>().swap(cur_);
+    }
 
 private:
     const uint8_t* data_ = nullptr;

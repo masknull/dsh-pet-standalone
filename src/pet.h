@@ -21,10 +21,11 @@
 // plane — the "held silhouette" dark-shadow bug is gone; v9 fixes tray
 // right-click (AttachThreadInput foreground fix) and makes passthrough a TRUE
 // whole-window mouse-transparency (no right-click bridge — use the tray menu)).
-inline const wchar_t kAppVersion[] = L"9";
+inline const wchar_t kAppVersion[] = L"9.1";
 inline const char kAppVersionDesc[] =
-    "dsh-pet-standalone v9 (91 animations, dual-stream VP9, per-frame alpha, "
-    "tray menu + true passthrough, single exe)";
+    "dsh-pet-standalone v9.1 (91 animations, dual-stream VP9, per-frame alpha, "
+    "tray menu + true passthrough, single exe; perf: lazy ULW submit, 62Hz tick, "
+    "scaled-source lookup tables, decoder/scratch buffer release on switch)";
 
 // Canonical pet-body hit test, shared by the window (WM_LBUTTONDOWN), the diag
 // logging and the selftest: HIT_BOX (200,50)-(440,335) on the 640x360 thumb
@@ -89,6 +90,7 @@ private:
     uint32_t curFrame_ = 0;
     uint32_t lastFrame_ = UINT32_MAX;
     int lastFacing_ = -1;
+    bool firstPaint_ = true;         // v9.1: first paint always submits the surface
     double winX_ = 0, winY_ = 0;   // window top-left (px)
     double lastMenuMs_ = 0;        // context-menu re-entry guard (nowSec)
     bool pressHitInside_ = false;  // WM_LBUTTONDOWN landed inside the pet hit box
