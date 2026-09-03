@@ -2,10 +2,14 @@
 // A faithful C++ port of the plugin logic in dsh-pet src/client (pickers.ts, motion.ts, pet.ts),
 // adapted to a single topmost per-pixel-alpha Win32 window per process.
 #pragma once
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #define IDI_APP 1   // prevent Windows min/max macros from clashing with std::min/max
 #include "config.h"
 #include "anim.h"
+#include "bubble.h"
+#include "httpserver.h"
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -20,12 +24,16 @@
 // dual-stream pair (main + alpha-as-gray VP9) so EVERY frame gets a fresh alpha
 // plane — the "held silhouette" dark-shadow bug is gone; v9 fixes tray
 // right-click (AttachThreadInput foreground fix) and makes passthrough a TRUE
-// whole-window mouse-transparency (no right-click bridge — use the tray menu)).
-inline const wchar_t kAppVersion[] = L"9.1";
+// whole-window mouse-transparency (no right-click bridge — use the tray menu).
+// v10 adds the HTTP notification bubble: listens on 127.0.0.1:53021 and shows
+// pushed text in a floating bubble above the pet head (10s, click-through,
+// tray toggleable)).
+inline const wchar_t kAppVersion[] = L"10.0";
 inline const char kAppVersionDesc[] =
-    "dsh-pet-standalone v9.1 (91 animations, dual-stream VP9, per-frame alpha, "
-    "tray menu + true passthrough, single exe; perf: lazy ULW submit, 62Hz tick, "
-    "scaled-source lookup tables, decoder/scratch buffer release on switch)";
+    "dsh-pet-standalone v10.0 (91 animations, dual-stream VP9, per-frame alpha, "
+    "tray menu + true passthrough, single exe; HTTP notification bubble "
+    "127.0.0.1:53021; perf: lazy ULW submit, 62Hz tick, scaled-source lookup "
+    "tables, decoder/scratch buffer release on switch)";
 
 // Canonical pet-body hit test, shared by the window (WM_LBUTTONDOWN), the diag
 // logging and the selftest: HIT_BOX (200,50)-(440,335) on the 640x360 thumb
@@ -40,6 +48,7 @@ enum : UINT {
     IDM_AUTOSTART = 3,
     IDM_RESTART = 4,
     IDM_QUIT = 5,
+    IDM_BUBBLE = 6,  // v10: 通知气泡 on/off
 };
 
 class PetWidget {
@@ -129,5 +138,15 @@ private:
     void addTray(bool forceReadd);
     void removeTray();
     void applyPassthrough();
+    void onHttpText(const std::string& utf8);  // HTTP thread → 主线程气泡
     double animDuration(int idx) const;
+
+    // ---- v10: HTTP notification bubble ----
+    BubbleWindow bubble_;
+    HttpServer http_;
+    bool bubbleOn_ = true;            // 菜单开关（默认开）
+    bool bubbleShowing_ = false;      // 当前有气泡在显示
+    double bubbleShownAt_ = 0;        // nowSec 时间戳（10s 自动消失）
+    std::string httpPending_;         // HTTP 线程交付的文本（UTF-8）
+    CRITICAL_SECTION httpLock_{};     // 保护 httpPending_
 };

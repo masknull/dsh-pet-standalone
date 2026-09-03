@@ -80,10 +80,11 @@ jobs:
             -I src -I $VPX/include \
             src/main.cpp src/pet.cpp src/anim.cpp src/inflate.cpp \
             src/jsonc.cpp src/config.cpp src/resources.cpp src/webm.cpp \
+            src/bubble.cpp src/httpserver.cpp \
             build/app_rc.o build/embedded_rc.o \
             $VPX/lib/libvpx.a \
             -o build/dsh-pet-standalone.exe \
-            -luser32 -lgdi32 -lshell32 -ladvapi32
+            -luser32 -lgdi32 -lshell32 -ladvapi32 -lws2_32 -lgdiplus
           echo "exe size: $(stat -c%s build/dsh-pet-standalone.exe) bytes"
 
       - name: Package exe

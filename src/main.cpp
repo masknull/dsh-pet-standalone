@@ -1,4 +1,8 @@
 // main.cpp — entry point, CLI parsing, self-test mode, GUI startup.
+// winsock2 必须在 windows.h（经 pet.h）之前，避免 winsock.h 与 winsock2.h 冲突。
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include "pet.h"
 #include "config.h"
 #include "anim.h"
@@ -17,6 +21,8 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
+#include <atomic>
+#include <process.h>
 
 // ------------------------------------------------------------------ selftest
 
@@ -392,6 +398,86 @@ static void runPkaDirTest(const std::wstring& dir) {
     }
 }
 
+// v10: 气泡文本省略（纯函数，注入假宽度测量器）。
+static void runBubbleTextTest() {
+    logLine("== bubble text ellipsis (ellipsizeForWidth) ==");
+    // 假测量器：每 wchar 10px。
+    auto widthOf = [](const std::wstring& s) { return (int)(s.size() * 10); };
+    // 短文本：不截断
+    check(ellipsizeForWidth(L"你好", 200, widthOf) == L"你好", "short text not truncated");
+    // 超长：截断到 <= maxW，尾部追加 "..."
+    std::wstring longText(30, L'A');  // 300px
+    std::wstring r = ellipsizeForWidth(longText, 100, widthOf);
+    check(r.size() == (size_t)10 && r.substr(7) == L"...", "long text ellipsized (7 chars + ...)");
+    // 前缀宽度 <= 100 - ellipsis(30) = 70 → 7 字符
+    check(widthOf(r) <= 100, "ellipsized width <= maxW");
+    // 无空格空间：只剩省略号
+    check(ellipsizeForWidth(longText, 20, widthOf) == L"...", "tiny budget -> bare ellipsis");
+    // 空串
+    check(ellipsizeForWidth(L"", 100, widthOf) == L"", "empty text passthrough");
+}
+
+// v10: extractHttpText 解析（纯函数，不联网）。
+static void runHttpExtractTest() {
+    logLine("== http text extraction (extractHttpText) ==");
+    // JSON body {"msg":"..."}
+    check(extractHttpText("POST", "/", "{\"msg\":\"你好\"}") == "你好", "json body msg field");
+    // JSON 对象无 msg 字段 → 空（不显示原始 JSON）
+    check(extractHttpText("POST", "/", "{\"foo\":1}").empty(), "json body without msg -> empty");
+    // 原始 body 文本（trimmed）
+    check(extractHttpText("POST", "/", "直接文本") == "直接文本", "raw body as text");
+    // query param ?msg=
+    check(extractHttpText("GET", "/?msg=hello%20world", "") == "hello world", "query param url-decoded");
+    // 空 body、无 query → 空
+    check(extractHttpText("GET", "/", "").empty(), "nothing -> empty");
+}
+
+// v10: HTTP 监听器回环（真实启动/连接/回调/停止）。
+static void runHttpLoopbackTest() {
+    logLine("== http listener loopback (127.0.0.1:<test port>) ==");
+    const int kTestPort = 53099;  // 避开产品端口 53021，防止与运行中的实例冲突
+    static std::atomic<bool> got{false};
+    static std::string gotText;
+    HttpServer srv;
+    auto onText = [](const std::string& t) { gotText = t; got.store(true); };
+    bool startOk = srv.start(kTestPort, onText);
+    check(startOk, "HttpServer::start(testPort)");
+    if (!startOk) return;
+
+    WSADATA wsa;
+    bool clientOk = false;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+        SOCKET c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (c != INVALID_SOCKET) {
+            SOCKADDR_IN a{};
+            a.sin_family = AF_INET;
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            a.sin_port = htons((u_short)kTestPort);
+            if (connect(c, (sockaddr*)&a, sizeof(a)) == 0) {
+                const char* body = "{\"msg\":\"hello-from-test\"}";
+                char req[256];
+                snprintf(req, sizeof(req),
+                         "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                         "Content-Type: application/json\r\nContent-Length: %zu\r\n"
+                         "Connection: close\r\n\r\n%s",
+                         strlen(body), body);
+                send(c, req, (int)strlen(req), 0);
+                char rbuf[512];
+                int rn = recv(c, rbuf, sizeof(rbuf), 0);
+                clientOk = rn > 0 && strstr(rbuf, "200") != nullptr;
+            }
+            closesocket(c);
+        }
+        WSACleanup();
+    }
+    check(clientOk, "POST received HTTP 200");
+    // 等回调异步触发
+    for (int i = 0; i < 100 && !got.load(); i++) Sleep(10);
+    check(got.load() && gotText == "hello-from-test", "onText callback fired with text");
+    srv.stop();
+    check(!srv.running(), "HttpServer stopped cleanly");
+}
+
 static int runSelfTest(const std::wstring& dir) {
     AllocConsole();
     FILE* con = nullptr;
@@ -411,6 +497,9 @@ static int runSelfTest(const std::wstring& dir) {
     runConfigTest();        // embedded default config + 350x197 geometry
     runEmbeddedAnimsTest(); // embedded anims decode without any external assets
     runTrayApiTest();       // Shell_NotifyIcon NIM_ADD/SETVERSION(4) returns
+    runBubbleTextTest();    // v10: bubble text ellipsis
+    runHttpExtractTest();   // v10: http text extraction (pure)
+    runHttpLoopbackTest();  // v10: http listener round-trip (real socket)
     if (!dir.empty()) {
         runPkaDirTest(dir);
     } else {
@@ -594,7 +683,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     if (wantVersion) {
         std::wstring v = L"dsh-pet-standalone v" + std::wstring(kAppVersion);
         v += L"\n" + utf8ToWide(kAppVersionDesc);
-        v += L"\n默认尺寸 350×197；内嵌 91 个上游原始动画（VP9-alpha WebM，640×360@24fps，运行时内存解码，零落盘）；\n右键任意位置弹菜单（含透明区）；托盘 v4（WM_CONTEXTMENU）。\n旧版 1.x/5.x/6.x exe（素材少、画质糊或右键命中受限）——请用本版本覆盖。";
+        v += L"\n默认尺寸 350×197；内嵌 91 个上游原始动画（VP9-alpha WebM，640×360@24fps，运行时内存解码，零落盘）；\n右键任意位置弹菜单（含透明区）；托盘 v4（WM_CONTEXTMENU）。\nv10 新增：HTTP 通知气泡（监听 127.0.0.1:53021，推送 {\\\"msg\\\":\\\"...\\\"} 在头顶显示 6s，右键可开关）。\n旧版 1.x/5.x/6.x exe（素材少、画质糊或右键命中受限）——请用本版本覆盖。";
         MessageBoxW(nullptr, v.c_str(), L"dsh-pet-standalone --version", MB_OK | MB_ICONINFORMATION);
         return 0;
     }
@@ -611,7 +700,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
             L"  dsh-pet-standalone.exe --version           版本信息\n"
             L"  dsh-pet-standalone.exe --help              本帮助\n\n"
             L"默认配置与动画集以内嵌资源(RCDATA)打包进 exe，双击即可播放；\n"
-            L"exe 同目录的 dsh-pet-standalone.jsonc / --assets 仅作为可选覆盖。\n";
+            L"exe 同目录的 dsh-pet-standalone.jsonc / --assets 仅作为可选覆盖。\n\n"
+            L"通知气泡：程序监听 127.0.0.1:53021。向它推送文本即可在宠物头顶显示气泡。\n"
+            L"  例: curl -X POST http://127.0.0.1:53021/ -d \"{\\\"msg\\\":\\\"你好\\\"}\"\n"
+            L"  或: curl \"http://127.0.0.1:53021/?msg=你好\"\n"
+            L"  气泡单行超长自动截断为 ...，显示约 6 秒消失；新消息覆盖旧消息；\n"
+            L"  右键菜单「通知气泡」可开关。\n";
         MessageBoxW(nullptr, helpText.c_str(), L"dsh-pet-standalone", MB_OK | MB_ICONINFORMATION);
         return 0;
     }

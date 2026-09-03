@@ -112,6 +112,7 @@ void setAutoStartImpl(const std::wstring& exePath, bool on) {
 PetWidget::PetWidget(HINSTANCE hInst, AppConfig cfg, std::vector<LoadedAnim> anims,
                      const std::wstring& exePath, const std::wstring& assetsDir)
     : hInst_(hInst), cfg_(std::move(cfg)), anims_(std::move(anims)), exePath_(exePath), assetsDir_(assetsDir) {
+    InitializeCriticalSection(&httpLock_);
     screenW_ = GetSystemMetrics(SM_CXSCREEN);
     screenH_ = GetSystemMetrics(SM_CYSCREEN);
     if (!cfg_.pets.empty()) {
@@ -127,6 +128,9 @@ PetWidget::PetWidget(HINSTANCE hInst, AppConfig cfg, std::vector<LoadedAnim> ani
 }
 
 PetWidget::~PetWidget() {
+    http_.stop();                 // v10: 先停 HTTP 监听，防止回调竞争
+    bubble_.destroy();            // v10: 关闭气泡窗口 + GDI+ shutdown
+    DeleteCriticalSection(&httpLock_);
     removeTray();
     if (g_petInstance == this) g_petInstance = nullptr;
     if (memDC_) {
@@ -175,6 +179,14 @@ bool PetWidget::create() {
     // decouples timer rate from DWM compositing cost.
     SetTimer(hwnd_, 1, 16, nullptr);
     addTray(false);
+
+    // v10: 通知气泡 + HTTP 监听（127.0.0.1:53021，硬编码）
+    bubble_.create(hInst_, winW_, screenW_, screenH_);
+    if (http_.start(53021, [this](const std::string& t) { onHttpText(t); })) {
+        diagLog("http: listening on 127.0.0.1:53021 (notification bubble)");
+    } else {
+        diagLog("http: FAILED to listen on 127.0.0.1:53021 (port busy?)");
+    }
 
     // initial corner placement
     if (!cfg_.pets.empty()) {
@@ -434,6 +446,11 @@ void PetWidget::onClick() {
 // ---------------------------------------------------------------- window loop
 
 void PetWidget::tick() {
+    // v10: 气泡 10s 自动消失（无论动画状态）
+    if (bubbleShowing_ && nowSec() - bubbleShownAt_ > 6.0) {
+        bubbleShowing_ = false;
+        bubble_.hide();
+    }
     if (!visible_ || curAnim_ < 0) return;
     const AnimUnit& p = anims_[curAnim_].pack;
     double now = nowSec();
@@ -564,6 +581,10 @@ void PetWidget::placeAt(double px, double py) {
     winX_ = px;
     winY_ = py;
     SetWindowPos(hwnd_, HWND_TOPMOST, (int)px, (int)py, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    // v10: 气泡跟随宠物移动（气泡窗口独立分层，仅位置同步）
+    if (bubbleShowing_) {
+        bubble_.positionNear(px, py, winW_, winH_, screenW_, screenH_);
+    }
 }
 
 // ---------------------------------------------------------------- tray / menus
@@ -651,6 +672,17 @@ void PetWidget::applyPassthrough() {
     SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex);
 }
 
+// ---------------------------------------------------------------- v10: HTTP 通知气泡
+
+void PetWidget::onHttpText(const std::string& utf8) {
+    if (utf8.empty()) return;
+    // 存储到锁定缓冲区，PostMessage 让主线程取走
+    EnterCriticalSection(&httpLock_);
+    httpPending_ = utf8;
+    LeaveCriticalSection(&httpLock_);
+    PostMessageW(hwnd_, WM_APP + 2, 0, 0);
+}
+
 // ---------------------------------------------------------------- wndproc
 
 void PetWidget::showContextMenu(int x, int y) {
@@ -669,6 +701,7 @@ void PetWidget::showContextMenu(int x, int y) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, IDM_SHOWHIDE, visible_ ? L"隐藏" : L"显示");
     AppendMenuW(m, MF_STRING | (passthrough_ ? MF_CHECKED : 0), IDM_PASSTHROUGH, L"鼠标穿透");
+    AppendMenuW(m, MF_STRING | (bubbleOn_ ? MF_CHECKED : 0), IDM_BUBBLE, L"通知气泡");
     bool on = isAutoStartImpl(exePath_);
     AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), IDM_AUTOSTART, L"开机启动");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
@@ -710,12 +743,26 @@ void PetWidget::handleCommand(UINT id) {
         case IDM_SHOWHIDE:
             visible_ = !visible_;
             ShowWindow(hwnd_, visible_ ? SW_SHOW : SW_HIDE);
+            // 气泡随宠物显隐（10s 超时仍在 tick 检查）
+            if (!visible_) bubble_.hide();
+            else if (bubbleShowing_) {
+                bubble_.show();
+                bubble_.positionNear(winX_, winY_, winW_, winH_, screenW_, screenH_);
+            }
             break;
         case IDM_PASSTHROUGH:
             passthrough_ = !passthrough_;
             applyPassthrough();
             break;
-                case IDM_AUTOSTART:
+        case IDM_BUBBLE:
+            bubbleOn_ = !bubbleOn_;
+            if (!bubbleOn_) {
+                bubbleShowing_ = false;
+                bubble_.hide();
+            }
+            diagLog("menu: notification bubble %s", bubbleOn_ ? "ON" : "OFF");
+            break;
+        case IDM_AUTOSTART:
             setAutoStartImpl(exePath_, !isAutoStartImpl(exePath_));
             break;
         case IDM_RESTART: {
@@ -855,6 +902,22 @@ LRESULT PetWidget::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (tmsg == WM_LBUTTONDBLCLK) {
                 handleCommand(IDM_SHOWHIDE);
             }
+            return 0;
+        }
+        case WM_APP + 2: {
+            // v10: HTTP 监听线程投递的文本（UTF-8）→ 气泡显示
+            std::string t;
+            EnterCriticalSection(&httpLock_);
+            t.swap(httpPending_);
+            LeaveCriticalSection(&httpLock_);
+            if (t.empty()) break;
+            if (!bubbleOn_) break;  // 开关关闭：丢弃
+            bubble_.setText(utf8ToWide(t));
+            bubbleShowing_ = true;
+            bubbleShownAt_ = nowSec();
+            bubble_.positionNear(winX_, winY_, winW_, winH_, screenW_, screenH_);
+            bubble_.show();
+            diagLog("bubble: show text len=%zu", t.size());
             return 0;
         }
         default:

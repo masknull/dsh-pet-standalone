@@ -25,6 +25,8 @@ add_executable(dsh-pet-standalone WIN32
   src/jsonc.cpp
   src/config.cpp
   src/resources.cpp
+  src/bubble.cpp
+  src/httpserver.cpp
   src/selftest_vectors.h
 )
 
@@ -54,7 +56,7 @@ else()
     ${VPX_ROOT}/lib/libwinpthread.a)
 endif()
 
-target_link_libraries(dsh-pet-standalone PRIVATE user32 gdi32 shell32 advapi32)
+target_link_libraries(dsh-pet-standalone PRIVATE user32 gdi32 shell32 advapi32 ws2_32 gdiplus)
 
 if(MSVC)
   target_compile_options(dsh-pet-standalone PRIVATE /utf-8 /O2 /W3)

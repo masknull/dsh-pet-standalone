@@ -114,8 +114,8 @@ if ($cl) {
     Push-Location $Root
     try {
         & cl /nologo /std:c++17 /O2 /MT /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS `
-            /I src src\main.cpp src\pet.cpp src\anim.cpp src\inflate.cpp src\jsonc.cpp src\config.cpp src\resources.cpp `
-            /Fo"$OutDir\\" /Fe$Exe user32.lib gdi32.lib shell32.lib advapi32.lib 2>&1 | ForEach-Object { $_ }
+            /I src src\main.cpp src\pet.cpp src\anim.cpp src\inflate.cpp src\jsonc.cpp src\config.cpp src\resources.cpp src\bubble.cpp src\httpserver.cpp `
+            /Fo"$OutDir\\" /Fe$Exe user32.lib gdi32.lib shell32.lib advapi32.lib ws2_32.lib gdiplus.lib 2>&1 | ForEach-Object { $_ }
         if (-not (Test-Path $Exe)) { throw 'MSVC build failed - no exe produced' }
     } finally { Pop-Location }
 } elseif ($gpp) {
@@ -139,8 +139,9 @@ if ($cl) {
     $cxx = @('-std=c++17', '-Os', '-s', '-static', '-fno-exceptions', '-fno-rtti', '-municode', '-mwindows',
              '-D_WIN32_WINNT=0x0601', '-ffunction-sections', '-fdata-sections', '-pipe', '-Wl,--gc-sections',
              '-I', 'src') + $extraInc + @('src\main.cpp', 'src\pet.cpp', 'src\anim.cpp', 'src\inflate.cpp',
-             'src\jsonc.cpp', 'src\config.cpp', 'src\resources.cpp') + $extraSrc + $rcList +
-             $extraLibs + @('-o', 'build\dsh-pet-standalone.exe', '-luser32', '-lgdi32', '-lshell32', '-ladvapi32')
+             'src\jsonc.cpp', 'src\config.cpp', 'src\resources.cpp', 'src\bubble.cpp', 'src\httpserver.cpp') + $extraSrc + $rcList +
+             $extraLibs + @('-o', 'build\dsh-pet-standalone.exe', '-luser32', '-lgdi32', '-lshell32', '-ladvapi32',
+                            '-lws2_32', '-lgdiplus')
     Set-Location $Root
     & $gpp.Source @cxx 1> $log 2>&1
     if (-not (Test-Path $Exe)) {
@@ -163,7 +164,7 @@ Write-Host '===== DLL imports (objdump) =====' -ForegroundColor Cyan
 if (Get-Command objdump -ErrorAction SilentlyContinue) {
     $imports = objdump -p $Exe | Select-String 'DLL Name'
     $imports | ForEach-Object { '  ' + $_.Line.Trim() }
-    $nonSystem = $imports | Where-Object { $_.Line -notmatch 'KERNEL32|USER32|GDI32|SHELL32|ADVAPI32|msvcrt|ntdll' }
+    $nonSystem = $imports | Where-Object { $_.Line -notmatch 'KERNEL32|USER32|GDI32|SHELL32|ADVAPI32|msvcrt|ntdll|gdiplus|WS2_32' }
     if ($nonSystem) {
         Write-Host 'WARNING: non-system DLL imports:' -ForegroundColor Yellow
         $nonSystem | ForEach-Object { '  ' + $_.Line.Trim() }
