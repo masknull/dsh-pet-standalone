@@ -38,8 +38,9 @@ jobs:
               'https://codeload.github.com/PC2005-cloud/dsh-pet/zip/refs/heads/main'
             unzip -q upstream.zip
             rm upstream.zip
-            THUMB=$(find dsh-pet-main -type d -name thumb | head -1)
-            if [ -z "$THUMB" ]; then echo 'ERROR: thumb dir not found'; exit 1; fi
+            # 上游素材目录名：旧版是 thumb，新版（v0.2+）改名 webm；两者都兼容
+            THUMB=$(find dsh-pet-main -type d \( -name thumb -o -name webm \) | head -1)
+            if [ -z "$THUMB" ]; then echo 'ERROR: thumb/webm dir not found'; exit 1; fi
             mkdir -p dsh-pet/assets
             mv "$THUMB" dsh-pet/assets/thumb
           fi
